@@ -39,3 +39,151 @@
  
 
 软件由豆包（豆包2.1自动、推理强度 高）、WorkBuddy（极致）协助生成，MIT协议，随便用，想干嘛干嘛
+
+---
+
+> **以下是ai生成的readme**
+
+---
+
+# 方波 · Square Wave Piano
+
+> 一个只有 **62 KB** 的 Android 钢琴应用：方波合成音色、88 键、低延迟，全部音频在 C/NDK 实时渲染，无任何第三方依赖。
+
+横屏启动即弹，深色界面配 A0–C8 科学音高记号，支持延音、夜间模式、64 复音，以及一条总线峰值限幅器保证划键盘不爆音。
+
+---
+
+## 特性
+
+- **88 键全键盘**：A0 – C8，白键标注科学音高记号（C4 / D4 / …），每个 C 音加粗放大便于定位
+- **方波合成音色**：实时查表合成，无需任何采样资源，APK 极小
+- **低延迟音频**：AAudio 低延迟回调（`PERFORMANCE_MODE_LOW_LATENCY`），音频全部在 C 线程渲染，不经过 Java
+- **开箱横屏**：自动横屏，旋转/屏幕尺寸变化不重建 Activity
+- **64 复音**：支持和弦、快速琶音；同音重复触发时旧音快速淡出，避免相位干涉
+- **总线峰值限幅器**（L2 式）：延音状态下划键盘也不会硬削波爆音
+- **无锁实时音频**：UI 线程与音频线程之间通过 C11 原子量同步，无数据竞争
+- **延音（Sustain）**：开启后音符自然延续
+- **夜间模式**：深色琴键，夜晚不刺眼，选择自动记忆
+- **双方式浏览键盘**：顶部滑块（点击带平滑滚动动画、拖动跟手）+ ◀ ▶ 方向键
+- **零权限、零网络**：纯本地运行，不申请任何隐私权限
+
+## 技术架构
+
+```
+┌─────────────────────────────────────────────┐
+│  Java / UI 层（Activity + 自定义 View）       │
+│  键盘渲染、触摸事件、滑块、夜间模式、延音       │
+└───────────────┬─────────────────────────────┘
+                │ JNI（仅传音符编号，无音频数据往返）
+┌───────────────▼─────────────────────────────┐
+│  C 音频引擎 jni/piano.c（libpiano.so）        │
+│  方波合成 · 包络 · 64 复音 · 总线限幅器        │
+└───────────────┬─────────────────────────────┘
+                │ AAudio 低延迟流（44.1 kHz / 立体声）
+┌───────────────▼─────────────────────────────┐
+│         Android Audio HAL（设备）             │
+└─────────────────────────────────────────────┘
+```
+
+### 低延迟是怎么做到的
+
+- 音频渲染完全运行在 AAudio 的高优先级实时回调线程，没有 Java 层合成、没有 GC、没有对象分配
+- 触摸事件经一次 JNI 调用只传递音符编号（int），真正的发声在 native 层完成
+- 输出缓冲设为 2048 帧（约 46 ms），在延迟与抗欠载（underrun）之间取得平衡
+
+### 防爆音设计
+
+开发过程中针对真实设备上的爆音问题做了多轮排查，最终方案：
+
+1. **无锁同步**：每个声部（voice）的 `active` / `released` 为 C11 原子量，NoteOn 先写全字段、最后以 `release` 序置 `active=1`，音频线程以 `acquire` 序读取，杜绝读到半初始化数据
+2. **声部抢占安全**：64 声部占满时，先原子停止最弱音再复用，避免半写状态
+3. **同音重触发淡出**：再次按下同一键时，旧声部在约 20 ms 内快速淡出，消除同频相位干涉
+4. **总线峰值限幅器**：瞬时 attack、约 150 ms 平滑 release，仅在总线超过阈值时压增益，单音符音量不受影响；多音叠加时平滑限幅而不是硬削波
+
+## 项目结构
+
+```
+.
+├── AndroidManifest.xml
+├── build.sh                 # 纯命令行构建脚本（无 Gradle）
+├── jni
+│   └── piano.c              # 全部音频引擎：合成、复音、限幅器、AAudio、JNI
+├── src/com/piano/square
+│   ├── MainActivity.java           # UI 逻辑、滑块、夜间模式、音源菜单
+│   ├── audio/NativeAudio.java      # JNI 接口声明
+│   └── view/PianoKeyboardView.java # 88 键自定义 View
+└── res
+    ├── drawable/            # 图标、按钮、滑块样式
+    ├── layout/activity_main.xml
+    ├── mipmap-anydpi-v26/   # 自适应图标（方波波形）
+    └── values/              # 颜色、字符串、主题
+```
+
+## 构建
+
+不使用 Gradle/Android Studio，仅用 Android SDK + NDK 命令行工具即可构建。
+
+### 环境要求
+
+- Android SDK **Build-Tools 34.0.0**，platform **android-31**
+- Android NDK **r26c**（其他较新版本通常也可）
+- JDK 17
+- 支持 ABI：`arm64-v8a`、`armeabi-v7a`
+
+### 步骤
+
+1. 编辑 `build.sh` 顶部三个变量（或设置同名环境变量）：
+
+   ```bash
+   SDK=${ANDROID_SDK_ROOT:-/path/to/android-sdk}
+   JAVA=${JAVA_HOME:-/path/to/jdk17}
+   NDK=${ANDROID_NDK_ROOT:-/path/to/android-ndk-r26c}
+   ```
+
+2. 准备签名密钥（脚本默认使用一个固定路径的 keystore，请替换为你自己的）：
+
+   ```bash
+   keytool -genkeypair -v -keystore piano.keystore \
+     -alias piano -keyalg RSA -keysize 2048 -validity 10000 \
+     -storepass pianopiano -keypass pianopiano \
+     -dname "CN=Piano, O=Square, C=CN"
+   ```
+
+   然后把 `build.sh` 中 `apksigner sign --ks ...` 的路径指向它。
+
+3. 构建：
+
+   ```bash
+   ./build.sh
+   ```
+
+   产物为 `out/PianoNDK.apk`。
+
+### 安装
+
+```bash
+adb install -r out/PianoNDK.apk
+```
+
+- `minSdkVersion`：26（Android 8.0）
+- `targetSdkVersion`：31（Android 12）
+- 包名：`com.piano.square`
+
+## 操作
+
+| 操作 | 效果 |
+| --- | --- |
+| 点击琴键 | 发声 |
+| 多点触控 | 同时演奏多个音 / 和弦 |
+| 顶部滑块 · 点击 | 键盘平滑滚动到该位置 |
+| 顶部滑块 · 拖动 | 键盘实时跟手移动 |
+| ◀ ▶ 按钮 | 向左 / 向右移动一个键区 |
+| 延音 | 开启后音符延音 |
+| 夜间 | 切换深色 / 浅色琴键 |
+| 左上角标题 | 音源菜单（当前仅方波） |
+
+## 许可
+
+[MIT License](LICENSE)
+
